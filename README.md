@@ -35,7 +35,7 @@ ai-ticket-validator/ ├── ocr_backend/         ← Python backend for OCR +
 
 ### Week 1
 - [x] Create GitHub repo and folder structure
-- [ ] Set up Python FastAPI backend
+- [x] Set up Python FastAPI backend
 - [ ] Integrate Tesseract OCR
 - [ ] Build preprocessing pipeline (OpenCV)
 
