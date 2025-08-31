@@ -2,7 +2,7 @@ import io
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, UnidentifiedImageError, ImageOps, ImageFilter
 import pytesseract
 import os
 from datetime import datetime
@@ -15,7 +15,13 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def ocr_from_bytes(contents: bytes) -> str:
     image = Image.open(io.BytesIO(contents)).convert("RGB")
-    text = pytesseract.image_to_string(image, config="--psm 6")
+    width, height = image.size
+    image = image.resize((width*2, height*2))
+    gray = ImageOps.grayscale(image)
+    gray = ImageOps.autocontrast(gray)
+    blurred = gray.filter(ImageFilter.MedianFilter(size=3))
+    bw = blurred.point(lambda x: 0 if x < 140 else 255, '1')
+    text = pytesseract.image_to_string(bw, config="--oem 3 --psm 6")
     return text.strip()
 
 
