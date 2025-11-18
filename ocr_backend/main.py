@@ -1,11 +1,14 @@
 import io
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import os
+import re
+from datetime import datetime
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from PIL import Image, UnidentifiedImageError, ImageOps, ImageFilter
+from PIL import Image, UnidentifiedImageError, ImageOps
 import pytesseract
-import os
-from datetime import datetime
+
+from ollama_parser import parse_ticket_llm
 
 app = FastAPI()
 
@@ -14,15 +17,14 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 def ocr_from_bytes(contents: bytes) -> str:
-    image = Image.open(io.BytesIO(contents)).convert("RGB")
-    width, height = image.size
-    image = image.resize((width*2, height*2))
+    image = Image.open(io.BytesIO(contents))
+    image = image.resize((image.width * 2, image.height * 2))
     gray = ImageOps.grayscale(image)
     gray = ImageOps.autocontrast(gray)
-    blurred = gray.filter(ImageFilter.MedianFilter(size=3))
-    bw = blurred.point(lambda x: 0 if x < 140 else 255, '1')
-    text = pytesseract.image_to_string(bw, config="--oem 3 --psm 6")
-    return text.strip()
+    config = "--oem 3 --psm 6 -l eng"
+    text = pytesseract.image_to_string(gray, config=config)
+    clean = re.sub(r"[^A-Za-z0-9:/\s-]", "", text)
+    return " ".join(clean.split())
 
 
 @app.get("/")
@@ -30,45 +32,31 @@ def root():
     return {"message": "AI Ticket Validator backend is running"}
 
 
-@app.post("/ocr")
-async def perform_ocr(file: UploadFile = File(...)):
+@app.post("/upload")
+async def upload_image(file: UploadFile = File(...), save: bool = Query(default=False)):
     if file.content_type not in ("image/jpeg", "image/png"):
         raise HTTPException(
             status_code=400, detail="Only JPEG or PNG images are supported")
 
     contents = await file.read()
 
+    filename = None
+    if save:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{file.filename}"
+        with open(os.path.join(UPLOAD_DIR, filename), "wb") as f:
+            f.write(contents)
+
     try:
-        text = await run_in_threadpool(ocr_from_bytes, contents)
+        ocr_text = await run_in_threadpool(ocr_from_bytes, contents)
     except UnidentifiedImageError:
         raise HTTPException(
             status_code=400, detail="Uploaded file is not a valid image")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
 
-    return JSONResponse(content={"extracted_text": text})
+    parsed = parse_ticket_llm(ocr_text)
 
+    response = {"extracted_text": ocr_text, "parsed_fields": parsed}
+    if filename:
+        response["filename"] = filename
 
-@app.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
-    if file.content_type not in ("image/jpeg", "image/png"):
-        raise HTTPException(
-            status_code=400, detail="Only JPEG or PNG images are supported")
-
-    contents = await file.read()
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{file.filename}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    with open(file_path, "wb") as f:
-        f.write(contents)
-
-    try:
-        text = await run_in_threadpool(ocr_from_bytes, contents)
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400, detail="Saved file is not a valid image")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
-
-    return JSONResponse(content={"filename": filename, "extracted_text": text})
+    return JSONResponse(content=response)
